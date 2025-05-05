@@ -1,11 +1,10 @@
-
 FROM python:3.11-slim-bookworm
 COPY --from=ghcr.io/astral-sh/uv:0.6.14 /uv /uvx /bin/
 
 # EXPOSE 5000
 
 # Copy the project into the image
-ADD . /app
+COPY . /app
 
 # Sync the project into a new environment, using the frozen lockfile
 WORKDIR /app
