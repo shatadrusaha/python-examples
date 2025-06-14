@@ -13,14 +13,13 @@ import pandas as pd  # noqa: E402
 import os  # noqa: E402
 import joblib  # noqa: E402
 from datetime import datetime as dt  # noqa: E402
-import mlflow  # noqa: E402
-from mlflow.models import infer_signature  # noqa: E402
 import optuna  # noqa: E402
 import lightgbm as lgbm  # noqa: E402
 from sklearn.datasets import load_breast_cancer  # noqa: E402
 from sklearn.model_selection import train_test_split  # noqa: E402
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, roc_auc_score  # noqa: E402
-from utils.generic_utils import plot_correlation_matrix  # noqa: E402
+from utils.plot_utils import plot_correlation_matrix  # noqa: E402
+from utils.mlflow_utils import setup_mlflow, log_params, log_metrics, log_model, log_optuna_study  # noqa: E402
 
 
 """                     User defined variables.                       """
@@ -29,11 +28,11 @@ random_seed = 14
 
 # Mlflow.
 mlflow_exp_name = 'mlflow-optuna'  # Experiment name.
-mlflow_run_name = 'lightgbm' # Run name.
+mlflow_run_name = f"lgbm-{dt.now().strftime('%Y%m%d-%H%M%S')}" # Run name.
 
 # TODO - Make sure to start the mlflow server/ui on the specific port first.
 mlflow_tracking_uri = 'http://localhost:8080' # MLflow Tracking Server URI.
-mlflow.set_tracking_uri(uri='http://localhost:8080') # Set the MLflow Tracking Server URI.
+# mlflow.set_tracking_uri(uri='http://localhost:8080') # Set the MLflow Tracking Server URI.
 
 # Miscellaneous.
 folder_project = 'mlflow-divein'  # Project folder name.
@@ -43,6 +42,167 @@ folder_files = 'files'  # Folder to store files.
 folder_plots = 'plots'  # Folder to store plots.
 
 path_artifacts = os.path.join(os.getcwd(), folder_project, folder_artifacts)
+
+
+"""                     User defined funtions (for Optuna).                       """
+# Model training function for LightGBM.
+def train_lgbm_model(params, X_train, y_train, X_test, y_test):
+    """Train model with given parameters and return metrics"""
+    model_lgbm = lgbm.train(
+        params=params,
+        train_set=lgbm.Dataset(data=X_train, label=y_train),
+        valid_sets=[lgbm.Dataset(data=X_test, label=y_test, reference=lgbm.Dataset(data=X_train, label=y_train))],
+    )
+
+    # Predict on the test dataset.
+    y_test_pred = model_lgbm.predict(data=X_test)
+
+    # Calculate metrics.
+    metrics = {
+        'accuracy': accuracy_score(y_true=y_test, y_pred=(y_test_pred >= 0.5).astype(int)),
+        'precision': precision_score(y_true=y_test, y_pred=(y_test_pred >= 0.5).astype(int)),
+        'recall': recall_score(y_true=y_test, y_pred=(y_test_pred >= 0.5).astype(int)),
+        'f1_score': f1_score(y_true=y_test, y_pred=(y_test_pred >= 0.5).astype(int)),
+        'roc_auc': roc_auc_score(y_true=y_test, y_score=y_test_pred),
+    }
+
+    return metrics, model_lgbm
+
+# Objective function for Optuna to optimize the LightGBM model.
+def objective(trial, 
+              params_data,
+              params_mlflow,
+              optimiser_metric='roc_auc', 
+              ): 
+    """
+    Objective function to optimize the LightGBM model using Optuna.
+    """
+    # Define hyperparameters to be optimized.
+    params_lgbm = {
+        'objective': 'binary',
+        'boosting': trial.suggest_categorical(
+            name='boosting', 
+            choices=['gbdt', 'rf', 'dart'],
+        ),
+        'data_sample_strategy': trial.suggest_categorical(
+            name='data_sample_strategy', 
+            choices=['bagging', 'goss'],
+        ),
+        'num_iterations': trial.suggest_int(
+            name='num_iterations', 
+            low=100, 
+            high=500,
+            step=50,
+        ),
+        'learning_rate': trial.suggest_float(
+            name='learning_rate', 
+            low=0.001, 
+            high=0.1,
+            step=None,
+            log=False,
+            ),
+        'num_leaves': trial.suggest_int(
+            name='num_leaves', 
+            low=20, 
+            high=100,
+            step=5,
+        ),
+        'max_depth': trial.suggest_int(
+            name='max_depth', 
+            low=-1, 
+            high=20,
+            step=1,
+        ),
+        'feature_fraction': trial.suggest_float(
+            name='feature_fraction', 
+            low=0.5, 
+            high=1.0,
+            step=None,
+            log=False,
+        ),
+        # 'bagging_fraction': trial.suggest_float('bagging_fraction', 0.5, 1.0),
+        # 'bagging_freq': trial.suggest_int('bagging_freq', 1, 10),
+        # 'lambda_l1': trial.suggest_float('lambda_l1', 0.0, 10.0),
+        # 'lambda_l2': trial.suggest_float('lambda_l2', 0.0, 10.0),
+        'metric': trial.suggest_categorical(
+            name='metric', 
+            choices=['auc', 'average_precision', 'binary_logloss'],
+        ),
+    }
+
+    # Create a nested MLflow run for this trial.
+    with setup_mlflow(
+        experiment_name=params_mlflow['mlflow_exp_name'], 
+        run_name=f"{params_mlflow['mlflow_run_name']}-trial-{trial.number}",
+        tracking_uri=params_mlflow['mlflow_tracking_uri'],
+        nested=True
+    ):
+        # Log the hyperparameters.
+        log_params(params_lgbm)
+
+        # Train the model and get metrics.
+        metrics, model_lgbm = train_lgbm_model(
+            params=params_lgbm, 
+            X_train=params_data['X_train'], 
+            y_train=params_data['y_train'], 
+            X_test=params_data['X_test'], 
+            y_test=params_data['y_test']
+        )
+
+        # Log the metrics.
+        log_metrics(metrics=metrics)
+
+        # Log the model.
+        log_model(model=model_lgbm)
+
+    return metrics[optimiser_metric]  # Return the metric to optimize (e.g., 'roc_auc').
+
+# Optimization function to run the Optuna study.
+def run_optimization(
+    params_data,
+    params_mlflow,
+    n_trials=20, 
+    optimiser_metric='roc_auc',
+    
+):  
+    # Create a parent MLflow run for the entire optimization process.
+    with setup_mlflow(
+        experiment_name=params_mlflow['mlflow_exp_name'], 
+        run_name=params_mlflow['mlflow_run_name'],
+        tracking_uri=params_mlflow['mlflow_tracking_uri'],
+        nested=False
+    ):
+        # Create and run the Optuna study.
+        study = optuna.create_study(direction='maximize')
+        study.optimize(
+            func=lambda trial: objective(
+                trial=trial, 
+                params_data=params_data, 
+                params_mlflow=params_mlflow,
+                optimiser_metric=optimiser_metric,
+            ),
+            n_trials=n_trials,
+            show_progress_bar=True,
+        )
+
+        # Log the Optuna study results to MLflow.
+        log_optuna_study(study=study)
+
+        # Train final model with best params
+        best_params = study.best_params
+        final_metrics, final_model = train_lgbm_model(
+            params=best_params, 
+            X_train=params_data['X_train'],
+            y_train=params_data['y_train'], 
+            X_test=params_data['X_test'], 
+            y_test=params_data['y_test']
+        )
+        
+        # Log final model and metrics
+        log_metrics(metrics={f"final_{k}": v for k, v in final_metrics.items()})
+        log_model(model=final_model, model_name="final_model")
+
+    return study#, final_metrics, final_model
 
 
 """                     Load and preprocess the data.                       """
@@ -95,196 +255,44 @@ X_train, X_test, y_train, y_test = train_test_split(
 
 # Ignoring any transformations (like, scaling) on the dataset for simplicity.
 
-# Define an objective function for Optuna to optimize the LightGBM model.
-def objective(trial):
-    """
-    Objective function to optimize the LightGBM model using Optuna.
-    """
-    # Define hyperparameters to be optimized.
-    params = {
-        'objective': 'binary',
-        'boosting': trial.suggest_categorical(
-            name='boosting', 
-            choices=['gbdt', 'rf', 'dart'],
-        ),
-        'data_sample_strategy': trial.suggest_categorical(
-            name='data_sample_strategy', 
-            choices=['bagging', 'goss'],
-        ),
-        'num_iterations': trial.suggest_int(
-            name='num_iterations', 
-            low=100, 
-            high=500,
-            step=50,
-        ),
-        'learning_rate': trial.suggest_float(
-            name='learning_rate', 
-            low=0.001, 
-            high=0.1,
-            step=None,
-            log=False,
-            ),
-        'num_leaves': trial.suggest_int(
-            name='num_leaves', 
-            low=20, 
-            high=100,
-            step=5,
-        ),
-        'max_depth': trial.suggest_int(
-            name='max_depth', 
-            low=-1, 
-            high=20,
-            step=1,
-        ),
-        'feature_fraction': trial.suggest_float(
-            name='feature_fraction', 
-            low=0.5, 
-            high=1.0,
-            step=None,
-            log=False,
-        ),
-        # 'bagging_fraction': trial.suggest_float('bagging_fraction', 0.5, 1.0),
-        # 'bagging_freq': trial.suggest_int('bagging_freq', 1, 10),
-        # 'lambda_l1': trial.suggest_float('lambda_l1', 0.0, 10.0),
-        # 'lambda_l2': trial.suggest_float('lambda_l2', 0.0, 10.0),
-        'metric': trial.suggest_categorical(
-            name='metric', 
-            choices=['auc', 'average_precision', 'binary_logloss'],
-        ),
-    }
 
-    # # Create a LightGBM dataset.
-    # train_dataset = lgbm.Dataset(X_train, label=y_train)
-    # test_dataset = lgbm.Dataset(X_test, label=y_test, reference=train_dataset)
+"""                     Hyperparameter optimisatiion using Optuna.                       """
+# Define parameters for the optimization process.
+params_data = {
+    'X_train': X_train,
+    'y_train': y_train,
+    'X_test': X_test,
+    'y_test': y_test,
+}
+params_mlflow = {
+    'mlflow_exp_name': mlflow_exp_name,
+    'mlflow_run_name': mlflow_run_name,
+    'mlflow_tracking_uri': mlflow_tracking_uri,
+}
 
-    # # Train the LightGBM model.
-    # model_lgbm = lgbm.train(
-    #     params=params,
-    #     train_set=train_dataset,
-    #     valid_sets=[test_dataset],
-    #     verbose_eval=False
-    # )
+# Run the optimization process.
+study = run_optimization(
+    params_data=params_data,
+    params_mlflow=params_mlflow,
+    n_trials=20,  # Number of trials to run.
+    optimiser_metric='roc_auc',  # Metric to optimize.
+)
 
-    # # Predict on the test dataset.
-    # y_test_pred = model_lgbm.predict(data=X_test)
+# Save the study results to a file.
+study_file_path = os.path.join(
+    path_artifacts, folder_files, f"optuna_study_{dt.now().strftime('%Y%m%d_%H%M%S')}.pkl"
+)
+joblib.dump(value=study, filename=study_file_path)
 
-    # # Calculate the ROC AUC score.
-    # roc_auc = roc_auc_score(y_true=y_test, y_score=y_test_pred)
+# # Save the best model to a file.
+# best_model_file_path = os.path.join(
+#     path_artifacts, folder_files, f"best_model_{dt.now().strftime('%Y%m%d_%H%M%S')}.pkl"
+# )
+# joblib.dump(value=study.best_trial.user_attrs['model'], filename=best_model_file_path)
 
-    return roc_auc
+# Print the best trial value and parameters.
+print(f"Best trial number: {study.best_trial.number}")
+print(f"Best trial value: {study.best_value}")
+print(f"Best parameters: {study.best_params}")
+# print(f"Final metrics: {metrics}")
 
-# Define a train fun
-
-
-
-"""                     Start an MLflow run - 'manual logging'.                       """
-# Create a LightGBM dataset.
-train_dataset = lgbm.Dataset(X_train, label=y_train)
-test_dataset = lgbm.Dataset(X_test, label=y_test, reference=train_dataset)
-
-# Start an MLflow run with the defined experiment name and run name.
-mlflow.set_experiment(mlflow_exp_name)
-run_name = f"{mlflow_run_name}-{dt.now().strftime('%Y%m%d-%H%M%S')}"
-
-with mlflow.start_run(run_name=run_name) as run:
-    # Log parameters to MLflow.
-    mlflow.log_params(params)
-    
-    # Train and log the LightGBM model to MLflow.
-    model_lgbm = lgbm.train(
-        params=params,
-        train_set=train_dataset,
-        valid_sets=[test_dataset],
-        # verbose_eval=False
-    )
-    signature = infer_signature(
-        model_input=X_train,
-        model_output=model_lgbm.predict(data=X_train)
-    )
-    # https://mlflow.org/docs/latest/api_reference/python_api/mlflow.lightgbm.html
-    mlflow.lightgbm.log_model(
-        lgb_model=model_lgbm, 
-        name=folder_model,
-        # name='model_lightgbm',
-        signature=signature,
-    )
-
-    # Save the model locally.
-    joblib.dump(
-        value=model_lgbm,
-        filename=os.path.join(path_artifacts, folder_model, 'model_lgbm.pkl')
-    )
-
-    # Predict on train and test datasets.
-    y_train_pred = model_lgbm.predict(data=X_train)
-    y_test_pred = model_lgbm.predict(data=X_test)
-
-    y_train_pred_binary = (y_train_pred >= 0.5).astype(int)
-    y_test_pred_binary = (y_test_pred >= 0.5).astype(int)
-
-    """   Check the distribution of the predicted values.
-    np.unique(y_test_pred_binary, return_counts=True)
-    np.unique(y_train_pred_binary, return_counts=True)
-
-    y_test.value_counts()
-    y_train.value_counts()
-    """
-
-    # Calculate and log the model metrics to MLflow.
-    dataset_types = ['train', 'test']
-    y_trues = [y_train, y_test] # list of true labels for train and test.
-    y_preds = [y_train_pred, y_test_pred] # list of predicted probabilities for train and test.
-    y_preds_binary = [y_train_pred_binary, y_test_pred_binary] # list of predicted classes for train and test.
-
-    for dataset, y_true, y_pred, y_pred_binary in zip(
-        dataset_types, y_trues, y_preds, y_preds_binary
-    ):
-        model_metrics = {
-            f"{dataset}_accuracy": accuracy_score(y_true=y_true, y_pred=y_pred_binary),
-            f"{dataset}_precision": precision_score(y_true=y_true, y_pred=y_pred_binary),
-            f"{dataset}_recall": recall_score(y_true=y_true, y_pred=y_pred_binary),
-            f"{dataset}_f1_score": f1_score(y_true=y_true, y_pred=y_pred_binary),
-            f"{dataset}_roc_auc": roc_auc_score(y_true=y_true, y_score=y_pred),
-        }
-        # print(model_metrics)
-        mlflow.log_metrics(metrics=model_metrics)
-    
-    # Feature importance.
-    df_feature_imp = pd.DataFrame(
-        {
-            'Feature': model_lgbm.feature_name(),
-            'Importance_gain': model_lgbm.feature_importance(importance_type='gain'),
-            'Importance_split': model_lgbm.feature_importance(importance_type='split'),
-        }
-    ).sort_values(by='Importance_gain', ascending=False).reset_index(drop=True)
-    filename_tosave = 'feature_importance.csv'
-    df_feature_imp.to_csv(
-        path_or_buf=os.path.join(path_artifacts, folder_files, filename_tosave),
-        index=False
-    )
-    mlflow.log_artifact(
-        local_path=os.path.join(path_artifacts, folder_files, filename_tosave),
-        artifact_path=folder_files
-    )
-
-    # Plot feature importance.
-    fea_imp_types = ['split', 'gain']
-
-    for type in fea_imp_types:
-        ax = lgbm.plot_importance(
-            model_lgbm,
-            importance_type=type,
-            max_num_features=10,
-            figsize=(10, 8), # width=10, height=6
-            title=f"Feature Importance ('{type}')",
-        )
-        filename_tosave = f"feature_importance_{type}.png"
-        ax.figure.savefig(
-            fname=os.path.join(path_artifacts, folder_plots, filename_tosave),
-            bbox_inches='tight'
-        )
-        mlflow.log_artifact(
-            local_path=os.path.join(path_artifacts, folder_plots, filename_tosave),
-            artifact_path=folder_plots
-        )
-        # mlflow.log_figure(figure=ax.figure, artifact_file=os.path.join(folder_plots, filename_tosave)) # unable to save the image correctly. image gets cropped.
