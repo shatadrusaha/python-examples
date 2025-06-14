@@ -8,7 +8,6 @@ Open the terminal and run:
 """                     Import libraries.                       """
 from datetime import datetime as dt  # noqa: E402
 import mlflow  # noqa: E402
-from mlflow.models import infer_signature  # noqa: E402
 import lightgbm as lgbm  # noqa: E402
 from sklearn.datasets import load_breast_cancer  # noqa: E402
 from sklearn.model_selection import train_test_split  # noqa: E402
@@ -20,13 +19,12 @@ from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_sc
 random_seed = 14
 
 # Mlflow.
-# TODO - Make sure to start the mlflow server/ui on the specific port first.
-mlflow_tracking_uri = 'http://localhost:8080'
-mlflow_exp_name = 'mlflow-auto-log'
-mlflow_run_name = 'lightgbm'
+mlflow_exp_name = 'mlflow-auto-log'  # Experiment name.
+mlflow_run_name = 'lightgbm' # Run name.
 
-# Set the MLflow Tracking Server URI.
-mlflow.set_tracking_uri(uri="http://localhost:8080")
+# TODO - Make sure to start the mlflow server/ui on the specific port first.
+mlflow_tracking_uri = 'http://localhost:8080' # MLflow Tracking Server URI.
+mlflow.set_tracking_uri(uri='http://localhost:8080') # Set the MLflow Tracking Server URI.
 
 
 """                     Load and preprocess the data.                       """

@@ -23,13 +23,12 @@ from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_sc
 random_seed = 14
 
 # Mlflow.
-# TODO - Make sure to start the mlflow server/ui on the specific port first.
-mlflow_tracking_uri = 'http://localhost:8080'
 mlflow_exp_name = 'mlflow-manual-log'  # Experiment name.
-mlflow_run_name = 'lightgbm'
+mlflow_run_name = 'lightgbm' # Run name.
 
-# Set the MLflow Tracking Server URI.
-mlflow.set_tracking_uri(uri='http://localhost:8080')
+# TODO - Make sure to start the mlflow server/ui on the specific port first.
+mlflow_tracking_uri = 'http://localhost:8080' # MLflow Tracking Server URI.
+mlflow.set_tracking_uri(uri='http://localhost:8080') # Set the MLflow Tracking Server URI.
 
 # Miscellaneous.
 folder_project = 'mlflow-divein'  # Project folder name.
