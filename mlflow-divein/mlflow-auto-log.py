@@ -22,7 +22,9 @@ random_seed = 14
 # Mlflow.
 # TODO - Make sure to start the mlflow server/ui on the specific port first.
 mlflow_tracking_uri = 'http://localhost:8080'
-mlflow_exp_name = 'mlflow-get-started'
+mlflow_exp_name = 'mlflow-auto-log'
+mlflow_run_name = 'lightgbm'
+
 # Set the MLflow Tracking Server URI.
 mlflow.set_tracking_uri(uri="http://localhost:8080")
 
@@ -79,7 +81,7 @@ WARNING mlflow.lightgbm:
 """                     Start an MLflow run - 'auto logging'.                       """
 # Start an MLflow run with the defined experiment name and run name.
 mlflow.set_experiment(mlflow_exp_name)
-mlflow_run_name = f"mlf-auto-log-{dt.now().strftime('%Y%m%d-%H%M%S')}"
+run_name = f"{mlflow_run_name}-{dt.now().strftime('%Y%m%d-%H%M%S')}"
 
 # Enable auto-logging.
 mlflow.autolog()
@@ -89,7 +91,7 @@ train_dataset = lgbm.Dataset(X_train, label=y_train)
 test_dataset = lgbm.Dataset(X_test, label=y_test, reference=train_dataset)
 
 
-with mlflow.start_run(run_name=mlflow_run_name) as run:
+with mlflow.start_run(run_name=run_name) as run:
     # Train and log the LightGBM model to MLflow.
     model_lgbm = lgbm.train(
         params=params,

@@ -6,6 +6,9 @@ Open the terminal and run:
 
 
 """                     Import libraries.                       """
+import pandas as pd  # noqa: E402
+import os  # noqa: E402
+import joblib  # noqa: E402
 from datetime import datetime as dt  # noqa: E402
 import mlflow  # noqa: E402
 from mlflow.models import infer_signature  # noqa: E402
@@ -22,9 +25,20 @@ random_seed = 14
 # Mlflow.
 # TODO - Make sure to start the mlflow server/ui on the specific port first.
 mlflow_tracking_uri = 'http://localhost:8080'
-mlflow_exp_name = 'mlflow-get-started'
+mlflow_exp_name = 'mlflow-manual-log'  # Experiment name.
+mlflow_run_name = 'lightgbm'
+
 # Set the MLflow Tracking Server URI.
-mlflow.set_tracking_uri(uri="http://localhost:8080")
+mlflow.set_tracking_uri(uri='http://localhost:8080')
+
+# Miscellaneous.
+folder_project = 'mlflow-divein'  # Project folder name.
+folder_artifacts = 'artifacts'  # Folder to store artifacts locally.
+folder_model = 'model'  # Folder to store the model.
+folder_files = 'files'  # Folder to store files.
+folder_plots = 'plots'  # Folder to store plots.
+
+path_artifacts = os.path.join(os.getcwd(), folder_project, folder_artifacts)
 
 
 """                     Load and preprocess the data.                       """
@@ -49,11 +63,12 @@ X_train, X_test, y_train, y_test = train_test_split(
     X, y, test_size=0.2, random_state=random_seed
 )
 
-# Ignoring any transformations (like, scaling) on the dataset for simplicity.
+# Create the folders to store artifacts, model, and files.
+os.makedirs(os.path.join(path_artifacts, folder_model), exist_ok=True)
+os.makedirs(os.path.join(path_artifacts, folder_files), exist_ok=True)
+os.makedirs(os.path.join(path_artifacts, folder_plots), exist_ok=True)
 
-# Create a LightGBM dataset.
-train_dataset = lgbm.Dataset(X_train, label=y_train)
-test_dataset = lgbm.Dataset(X_test, label=y_test, reference=train_dataset)
+# Ignoring any transformations (like, scaling) on the dataset for simplicity.
 
 # Define parameters for the LightGBM model.
 # https://lightgbm.readthedocs.io/en/latest/Parameters.html#parameters-format
@@ -76,11 +91,15 @@ params = {
 
 
 """                     Start an MLflow run - 'manual logging'.                       """
+# Create a LightGBM dataset.
+train_dataset = lgbm.Dataset(X_train, label=y_train)
+test_dataset = lgbm.Dataset(X_test, label=y_test, reference=train_dataset)
+
 # Start an MLflow run with the defined experiment name and run name.
 mlflow.set_experiment(mlflow_exp_name)
-mlflow_run_name = f"mlf-manual-log-{dt.now().strftime('%Y%m%d-%H%M%S')}"
+run_name = f"{mlflow_run_name}-{dt.now().strftime('%Y%m%d-%H%M%S')}"
 
-with mlflow.start_run(run_name=mlflow_run_name) as run:
+with mlflow.start_run(run_name=run_name) as run:
     # Log parameters to MLflow.
     mlflow.log_params(params)
     
@@ -95,10 +114,18 @@ with mlflow.start_run(run_name=mlflow_run_name) as run:
         model_input=X_train,
         model_output=model_lgbm.predict(data=X_train)
     )
+    # https://mlflow.org/docs/latest/api_reference/python_api/mlflow.lightgbm.html
     mlflow.lightgbm.log_model(
         lgb_model=model_lgbm, 
-        artifact_path="model",
+        name=folder_model,
+        # name='model_lightgbm',
         signature=signature,
+    )
+
+    # Save the model locally.
+    joblib.dump(
+        value=model_lgbm,
+        filename=os.path.join(path_artifacts, folder_model, 'model_lgbm.pkl')
     )
 
     # Predict on train and test datasets.
@@ -136,4 +163,41 @@ with mlflow.start_run(run_name=mlflow_run_name) as run:
         mlflow.log_metrics(metrics=model_metrics)
     
     # Feature importance.
-    # feature_importance = model_lgbm.feature_importance(importance_type='gain')
+    df_feature_imp = pd.DataFrame(
+        {
+            'Feature': model_lgbm.feature_name(),
+            'Importance_gain': model_lgbm.feature_importance(importance_type='gain'),
+            'Importance_split': model_lgbm.feature_importance(importance_type='split'),
+        }
+    ).sort_values(by='Importance_gain', ascending=False).reset_index(drop=True)
+    filename_tosave = 'feature_importance.csv'
+    df_feature_imp.to_csv(
+        path_or_buf=os.path.join(path_artifacts, folder_files, filename_tosave),
+        index=False
+    )
+    mlflow.log_artifact(
+        local_path=os.path.join(path_artifacts, folder_files, filename_tosave),
+        artifact_path=folder_files
+    )
+
+    # Plot feature importance.
+    fea_imp_types = ['split', 'gain']
+
+    for type in fea_imp_types:
+        ax = lgbm.plot_importance(
+            model_lgbm,
+            importance_type=type,
+            max_num_features=10,
+            figsize=(10, 8), # width=10, height=6
+            title=f"Feature Importance ('{type}')",
+        )
+        filename_tosave = f"feature_importance_{type}.png"
+        ax.figure.savefig(
+            fname=os.path.join(path_artifacts, folder_plots, filename_tosave),
+            bbox_inches='tight'
+        )
+        mlflow.log_artifact(
+            local_path=os.path.join(path_artifacts, folder_plots, filename_tosave),
+            artifact_path=folder_plots
+        )
+        # mlflow.log_figure(figure=ax.figure, artifact_file=os.path.join(folder_plots, filename_tosave)) # unable to save the image correctly. image gets cropped.
