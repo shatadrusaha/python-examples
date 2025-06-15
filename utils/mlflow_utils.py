@@ -27,16 +27,28 @@ def log_metrics(metrics: Dict[str, float], step: Optional[int] = None) -> None:
     for metric_name, metric_value in metrics.items():
         mlflow.log_metric(key=metric_name, value=metric_value, step=step)
 
-def log_model(model: Any, model_name: str = 'model', conda_env: Optional[Dict] = None) -> None:
+def log_model(model: Any, signature, model_name: str = 'model', conda_env: Optional[Dict] = None) -> None:
     """Log a model to MLflow."""
-    mlflow.lightgbm.log_model(lgb_model=model, name=model_name, conda_env=conda_env)
+    mlflow.lightgbm.log_model(lgb_model=model, signature=signature, name=model_name, conda_env=conda_env)
 
 def log_figure(figure, figure_name: str, artifact_path: str) -> None:
-    """Log a matplotlib figure to MLflow."""
+    """
+    Log a figure to MLflow.
+    Supports both matplotlib figures (saved as PNG) and plotly figures (saved as HTML).
+    """
     with tempfile.TemporaryDirectory() as tmpdirname:
-        filepath = os.path.join(tmpdirname, f"{figure_name}.png")
-        figure.savefig(filepath)
-        mlflow.log_artifact(local_path=filepath, artifact_path=artifact_path)
+        # Handle Plotly figures (from newer Optuna versions)
+        if hasattr(figure, 'write_html'):
+            filepath = os.path.join(tmpdirname, f"{figure_name}.html")
+            figure.write_html(filepath)
+            mlflow.log_artifact(local_path=filepath, artifact_path=artifact_path)
+        # Handle Matplotlib figures
+        elif hasattr(figure, 'savefig'):
+            filepath = os.path.join(tmpdirname, f"{figure_name}.png")
+            figure.savefig(filepath)
+            mlflow.log_artifact(local_path=filepath, artifact_path=artifact_path)
+        else:
+            print(f"Warning: Figure type {type(figure)} not supported for logging")
 
 def log_optuna_study(study) -> None:
     """Log Optuna study details to MLflow."""
@@ -62,5 +74,11 @@ def log_optuna_study(study) -> None:
         # Parameter importance
         fig = vis.plot_param_importances(study=study)
         log_figure(figure=fig, figure_name="param_importances", artifact_path="optuna_plots")
+        
+        # Add parallel coordinate plot if there are enough trials
+        if len(study.trials) >= 2:
+            fig = vis.plot_parallel_coordinate(study=study)
+            log_figure(figure=fig, figure_name="parallel_coordinate", artifact_path="optuna_plots")
+            
     except Exception as e:
         print(f"Warning: Could not log Optuna visualizations: {e}")

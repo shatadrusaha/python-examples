@@ -15,6 +15,7 @@ import joblib  # noqa: E402
 from datetime import datetime as dt  # noqa: E402
 import optuna  # noqa: E402
 import lightgbm as lgbm  # noqa: E402
+from mlflow.models import infer_signature  # noqa: E402
 from sklearn.datasets import load_breast_cancer  # noqa: E402
 from sklearn.model_selection import train_test_split  # noqa: E402
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, roc_auc_score, average_precision_score, log_loss  # noqa: E402
@@ -68,7 +69,13 @@ def train_lgbm_model(params, X_train, y_train, X_test, y_test):
         'binary_logloss': log_loss(y_true=y_test, y_pred=y_test_pred),
     }
 
-    return metrics, model_lgbm
+    # Get the model signature.
+    signature = infer_signature(
+        model_input=X_train.iloc[:1], 
+        model_output=model_lgbm.predict(data=X_train.iloc[:1])
+    )
+
+    return metrics, model_lgbm, signature
 
 # Objective function for Optuna to optimize the LightGBM model.
 def objective(trial, 
@@ -143,7 +150,7 @@ def objective(trial,
         log_params(params_lgbm)
 
         # Train the model and get metrics.
-        metrics, model_lgbm = train_lgbm_model(
+        metrics, model_lgbm, signature = train_lgbm_model(
             params=params_lgbm, 
             X_train=params_data['X_train'], 
             y_train=params_data['y_train'], 
@@ -155,7 +162,7 @@ def objective(trial,
         log_metrics(metrics=metrics)
 
         # Log the model.
-        log_model(model=model_lgbm)
+        log_model(model=model_lgbm, signature=signature)
 
     return metrics[optimiser_metric]  # Return the metric to optimize (e.g., 'roc_auc').
 
@@ -201,8 +208,8 @@ def run_optimization(
         best_params['objective'] = 'binary'
         best_params['metric'] = optimiser_metric
         log_params(params={f"best_{k}": v for k, v in best_params.items()})
-        
-        final_metrics, final_model = train_lgbm_model(
+
+        final_metrics, final_model, signature = train_lgbm_model(
             params=best_params, 
             X_train=params_data['X_train'],
             y_train=params_data['y_train'], 
@@ -212,7 +219,7 @@ def run_optimization(
         
         # Log final model and metrics
         log_metrics(metrics={f"final_{k}": v for k, v in final_metrics.items()})
-        log_model(model=final_model, model_name="final_model")
+        log_model(model=final_model, signature=signature, model_name="final_model")
 
     return study#, final_metrics, final_model
 
@@ -220,6 +227,9 @@ def run_optimization(
 """                     Load and preprocess the data.                       """
 # Load the breast cancer dataset.
 X, y = load_breast_cancer(return_X_y=True, as_frame=True)
+
+# Remove 'white-space' characters from column names.
+X.columns = X.columns.str.replace(' ', '_', regex=True)
 
 # Create the folders to store artifacts, model, and files.
 os.makedirs(os.path.join(path_artifacts, folder_model), exist_ok=True)
@@ -285,9 +295,12 @@ params_mlflow = {
     'mlflow_tracking_uri': mlflow_tracking_uri,
 }
 
+"""
+'maximize' --> auc, 'average_precision'
+'minimise' --> 'binary_logloss'
+"""
+
 # Run the optimization process.
-# 'maximize' --> auc, 'average_precision'
-# 'minimise' --> 'binary_logloss'
 study = run_optimization(
     params_data=params_data,
     params_mlflow=params_mlflow,
