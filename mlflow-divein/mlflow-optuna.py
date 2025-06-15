@@ -17,7 +17,7 @@ import optuna  # noqa: E402
 import lightgbm as lgbm  # noqa: E402
 from sklearn.datasets import load_breast_cancer  # noqa: E402
 from sklearn.model_selection import train_test_split  # noqa: E402
-from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, roc_auc_score  # noqa: E402
+from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, roc_auc_score, average_precision_score, log_loss  # noqa: E402
 from utils.plot_utils import plot_correlation_matrix  # noqa: E402
 from utils.mlflow_utils import setup_mlflow, log_params, log_metrics, log_model, log_optuna_study  # noqa: E402
 
@@ -28,7 +28,7 @@ random_seed = 14
 
 # Mlflow.
 mlflow_exp_name = 'mlflow-optuna'  # Experiment name.
-mlflow_run_name = f"lgbm-{dt.now().strftime('%Y%m%d-%H%M%S')}" # Run name.
+# mlflow_run_name = f"lgbm-{dt.now().strftime('%Y%m%d-%H%M%S')}" # Run name.
 
 # TODO - Make sure to start the mlflow server/ui on the specific port first.
 mlflow_tracking_uri = 'http://localhost:8080' # MLflow Tracking Server URI.
@@ -63,7 +63,9 @@ def train_lgbm_model(params, X_train, y_train, X_test, y_test):
         'precision': precision_score(y_true=y_test, y_pred=(y_test_pred >= 0.5).astype(int)),
         'recall': recall_score(y_true=y_test, y_pred=(y_test_pred >= 0.5).astype(int)),
         'f1_score': f1_score(y_true=y_test, y_pred=(y_test_pred >= 0.5).astype(int)),
-        'roc_auc': roc_auc_score(y_true=y_test, y_score=y_test_pred),
+        'auc': roc_auc_score(y_true=y_test, y_score=y_test_pred),
+        'average_precision': average_precision_score(y_true=y_test, y_score=y_test_pred),
+        'binary_logloss': log_loss(y_true=y_test, y_pred=y_test_pred),
     }
 
     return metrics, model_lgbm
@@ -72,7 +74,7 @@ def train_lgbm_model(params, X_train, y_train, X_test, y_test):
 def objective(trial, 
               params_data,
               params_mlflow,
-              optimiser_metric='roc_auc', 
+              optimiser_metric='auc', 
               ): 
     """
     Objective function to optimize the LightGBM model using Optuna.
@@ -124,10 +126,10 @@ def objective(trial,
         # 'bagging_freq': trial.suggest_int('bagging_freq', 1, 10),
         # 'lambda_l1': trial.suggest_float('lambda_l1', 0.0, 10.0),
         # 'lambda_l2': trial.suggest_float('lambda_l2', 0.0, 10.0),
-        'metric': trial.suggest_categorical(
-            name='metric', 
-            choices=['auc', 'average_precision', 'binary_logloss'],
-        ),
+        # 'metric': trial.suggest_categorical(
+        #     name='metric', 
+        #     choices=['auc', 'average_precision', 'binary_logloss'],
+        'metric': optimiser_metric,
     }
 
     # Create a nested MLflow run for this trial.
@@ -161,8 +163,9 @@ def objective(trial,
 def run_optimization(
     params_data,
     params_mlflow,
+    direction='maximize',
     n_trials=20, 
-    optimiser_metric='roc_auc',
+    optimiser_metric='auc',
     
 ):  
     # Create a parent MLflow run for the entire optimization process.
@@ -173,7 +176,7 @@ def run_optimization(
         nested=False
     ):
         # Create and run the Optuna study.
-        study = optuna.create_study(direction='maximize')
+        study = optuna.create_study(direction=direction)
         study.optimize(
             func=lambda trial: objective(
                 trial=trial, 
@@ -188,8 +191,17 @@ def run_optimization(
         # Log the Optuna study results to MLflow.
         log_optuna_study(study=study)
 
-        # Train final model with best params
+        """
+        - Add the 'objective' and 'metric' to the best parameters. This is necessary for LightGBM to work correctly (build and predict). Without the objective function, predict function returns raw scores instead of probabilities, which can be less then 0 and/or greater than 1.
+        - Since these aren't being tuned/optimised, they aren't captured in the 'study.best_params'. 
+        
+        """
+        # Train final model with best params.
         best_params = study.best_params
+        best_params['objective'] = 'binary'
+        best_params['metric'] = optimiser_metric
+        log_params(params={f"best_{k}": v for k, v in best_params.items()})
+        
         final_metrics, final_model = train_lgbm_model(
             params=best_params, 
             X_train=params_data['X_train'],
@@ -257,13 +269,16 @@ X_train, X_test, y_train, y_test = train_test_split(
 
 
 """                     Hyperparameter optimisatiion using Optuna.                       """
-# Define parameters for the optimization process.
+# Define input parameters for the optimization process.
 params_data = {
     'X_train': X_train,
     'y_train': y_train,
     'X_test': X_test,
     'y_test': y_test,
 }
+
+mlflow_run_name = f"lgbm-auc-{dt.now().strftime('%Y%m%d-%H%M%S')}" # Run name.
+
 params_mlflow = {
     'mlflow_exp_name': mlflow_exp_name,
     'mlflow_run_name': mlflow_run_name,
@@ -271,12 +286,26 @@ params_mlflow = {
 }
 
 # Run the optimization process.
+# 'maximize' --> auc, 'average_precision'
+# 'minimise' --> 'binary_logloss'
 study = run_optimization(
     params_data=params_data,
     params_mlflow=params_mlflow,
-    n_trials=20,  # Number of trials to run.
-    optimiser_metric='roc_auc',  # Metric to optimize.
+    direction='maximize',  # Direction to optimize the metric.
+    n_trials=10,  # Number of trials to run.
+    optimiser_metric='auc',  # Metric to optimize.
 )
+
+"""
+params = {'boosting': 'rf', 'data_sample_strategy': 'bagging', 'num_iterations': 400, 'learning_rate': 0.049789231908604945, 'num_leaves': 20, 'max_depth': 11, 'feature_fraction': 0.9264411965784105}
+
+print(params)
+
+params['objective'] = 'binary'
+params['metric'] = 'auc'
+
+print(params)
+"""
 
 # Save the study results to a file.
 study_file_path = os.path.join(
