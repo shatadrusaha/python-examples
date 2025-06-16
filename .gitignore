@@ -172,3 +172,11 @@ cython_debug/
 
 # PyPI configuration file
 .pypirc
+
+*.DS_Store
+*.parquet
+
+# MLflow artifacts and runs.
+mlflow-divein/mlartifacts/
+mlflow-divein/mlruns/
+mlflow-divein/artifacts/
