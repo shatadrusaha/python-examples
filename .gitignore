@@ -175,3 +175,8 @@ cython_debug/
 
 *.DS_Store
 *.parquet
+
+# MLflow artifacts and runs.
+mlflow-divein/mlartifacts/
+mlflow-divein/mlruns/
+mlflow-divein/artifacts/
