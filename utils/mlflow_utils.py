@@ -1,5 +1,5 @@
 import mlflow
-from typing import Dict, Any, Optional, Union
+from typing import Dict, Any, Optional
 import tempfile
 import os
 
